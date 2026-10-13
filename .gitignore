@@ -1,0 +1,46 @@
+venv/
+.env
+__pycache__/
+*.pyc
+# Python environments and cache
+airflow-venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Datasets and generated data
+data/
+logs/
+reports/
+
+# MLflow local tracking
+mlruns/
+mlflow.db
+mlflow.db-*
+
+# Generated model artifacts
+models/*.joblib
+models/*.pkl
+
+# Local IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local database and generated files
+*.sqlite
+*.sqlite3
+*.log
+
+# Keep lightweight deployment configuration
+!models/decision_threshold.json
+!models/deployment_manifest.json
+
+# Reference data used for drift monitoring
+models/reference_features.csv

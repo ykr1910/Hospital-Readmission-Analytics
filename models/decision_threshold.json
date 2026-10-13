@@ -1,0 +1,10 @@
+{
+    "model_name": "XGBoost",
+    "threshold": 0.1336142122745514,
+    "positive_class": "Readmitted within 30 days",
+    "target_mapping": {
+        "<30": 1,
+        ">30": 0,
+        "NO": 0
+    }
+}
