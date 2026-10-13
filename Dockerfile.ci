@@ -1,0 +1,23 @@
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements-api.txt .
+RUN pip install --no-cache-dir -r requirements-api.txt
+
+COPY api/ ./api/
+
+# CI-only placeholders: validate image construction, not model serving.
+RUN mkdir -p models \
+    && printf '{"threshold": 0.1336142122745514}\n' > models/decision_threshold.json \
+    && printf '{"model_name":"CI-placeholder","model_version":"ci","deployment_stage":"ci","metrics":{},"model_registry":{}}\n' > models/deployment_manifest.json \
+    && printf 'placeholder\n' > models/best_model.joblib \
+    && printf 'age_group,gender,admission_type_id,time_in_hospital,prior_visits,diagnosis_count,medication_count,medical_specialty\n' > models/reference_features.csv
+
+EXPOSE 8000
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

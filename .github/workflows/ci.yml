@@ -28,4 +28,4 @@ jobs:
           python -m compileall -q api dashboard scripts inspect_ml_data.py test_ml_database.py
 
       - name: Build Docker image
-        run: docker build -t hospital-readmission-api:ci .
+        run: docker build -f Dockerfile.ci -t hospital-readmission-api:ci .
