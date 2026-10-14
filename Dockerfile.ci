@@ -12,11 +12,14 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 COPY api/ ./api/
 
 # CI-only placeholders: validate image construction, not model serving.
+
 RUN mkdir -p models \
-    && printf '{"threshold": 0.1336142122745514}\n' > models/decision_threshold.json \
+    && printf '{"model_name":"CI-placeholder","threshold":0.1336142122745514}\n' > models/decision_threshold.json \
     && printf '{"model_name":"CI-placeholder","model_version":"ci","deployment_stage":"ci","metrics":{},"model_registry":{}}\n' > models/deployment_manifest.json \
-    && printf 'placeholder\n' > models/best_model.joblib \
     && printf 'age_group,gender,admission_type_id,time_in_hospital,prior_visits,diagnosis_count,medication_count,medical_specialty\n' > models/reference_features.csv
+
+RUN python -c "import joblib, pandas as pd; from sklearn.dummy import DummyClassifier; columns=['age_group','gender','admission_type_id','time_in_hospital','prior_visits','diagnosis_count','medication_count','medical_specialty']; X=pd.DataFrame([['70-80','Female',1,3,0,5,10,'InternalMedicine'],['50-60','Male',2,2,1,3,5,'Cardiology']], columns=columns); model=DummyClassifier(strategy='prior').fit(X,[0,1]); joblib.dump(model,'models/best_model.joblib')"
+
 
 EXPOSE 8000
 

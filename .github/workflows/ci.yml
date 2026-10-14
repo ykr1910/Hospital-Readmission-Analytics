@@ -23,9 +23,32 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install CI test dependency
+        run: python -m pip install requests
+
       - name: Check Python syntax
         run: |
           python -m compileall -q api dashboard scripts inspect_ml_data.py test_ml_database.py
 
       - name: Build Docker image
         run: docker build -f Dockerfile.ci -t hospital-readmission-api:ci .
+
+      - name: Start CI API container
+        run: |
+          docker run -d --name hospital-readmission-api-ci -p 8000:8000 hospital-readmission-api:ci
+
+      - name: Test API health endpoint
+        run: |
+          python -c "import time, requests; url='http://127.0.0.1:8000/health'; exec('for attempt in range(30):\n try:\n  response=requests.get(url, timeout=2)\n  response.raise_for_status()\n  print(response.json())\n  break\n except Exception:\n  if attempt == 29: raise\n  time.sleep(2)')"
+
+      - name: Test API prediction endpoint
+        run: |
+          python -c "import requests; payload={'age_group':'70-80','gender':'Female','admission_type_id':1,'time_in_hospital':3,'prior_visits':0,'diagnosis_count':5,'medication_count':10,'medical_specialty':'InternalMedicine'}; response=requests.post('http://127.0.0.1:8000/predict', json=payload, timeout=10); response.raise_for_status(); result=response.json(); assert 0 <= result['probability'] <= 1; assert result['predicted_readmission_within_30_days'] in [0,1]; print(result)"
+
+      - name: Show API logs on failure
+        if: failure()
+        run: docker logs hospital-readmission-api-ci
+
+      - name: Stop CI API container
+        if: always()
+        run: docker rm -f hospital-readmission-api-ci
