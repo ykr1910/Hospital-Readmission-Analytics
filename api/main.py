@@ -2,27 +2,37 @@
 import csv
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-import numpy as np
 
 import joblib
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+
+# --------------------------------------------------
+# Paths and configuration
+# --------------------------------------------------
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 MODEL_PATH = PROJECT_ROOT / "models" / "best_model.joblib"
 THRESHOLD_PATH = PROJECT_ROOT / "models" / "decision_threshold.json"
 MANIFEST_PATH = PROJECT_ROOT / "models" / "deployment_manifest.json"
+
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOG_DIR / "prediction_logs.csv"
+REFERENCE_FILE = PROJECT_ROOT / "models" / "reference_features.csv"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("readmission_api")
+
 
 FEATURE_FIELDS = [
     "age_group",
@@ -46,149 +56,6 @@ LOG_FIELDS = [
     "error",
 ]
 
-
-def log_prediction(record: dict) -> None:
-    """Append one prediction or error event to the CSV log."""
-    try:
-        new_file = not LOG_FILE.exists() or LOG_FILE.stat().st_size == 0
-
-        with LOG_FILE.open("a", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=LOG_FIELDS)
-            if new_file:
-                writer.writeheader()
-            writer.writerow(record)
-
-    except OSError:
-        logger.exception("Could not write prediction monitoring log")
-
-
-
-import os
-
-
-MODEL_SOURCE = os.getenv("MODEL_SOURCE", "local").lower()
-
-if MODEL_SOURCE == "registry":
-    import mlflow
-    import mlflow.sklearn
-    mlflow.set_tracking_uri(
-        os.getenv(
-            "MLFLOW_TRACKING_URI",
-            "sqlite:///E:/Hospital_Readmission_Analytics/mlflow.db",
-        )
-    )
-
-    REGISTERED_MODEL_URI = os.getenv(
-        "MLFLOW_MODEL_URI",
-        "models:/HospitalReadmissionXGBoost/1",
-    )
-
-    model = mlflow.sklearn.load_model(REGISTERED_MODEL_URI)
-    logger.info("Loaded model from MLflow Registry: %s", REGISTERED_MODEL_URI)
-
-elif MODEL_SOURCE == "local":
-    model = joblib.load(MODEL_PATH)
-    logger.info("Loaded model from local artifact: %s", MODEL_PATH)
-
-else:
-    raise ValueError(
-        "MODEL_SOURCE must be either 'local' or 'registry'"
-    )
-
-
-with THRESHOLD_PATH.open("r", encoding="utf-8") as file:
-    model_config = json.load(file)
-
-with MANIFEST_PATH.open("r", encoding="utf-8-sig") as file:
-    deployment_manifest = json.load(file)
-
-THRESHOLD = float(model_config["threshold"])
-
-app = FastAPI(
-    title="Hospital Readmission Prediction API",
-    description=(
-        "Academic prototype for predicting 30-day hospital "
-        "readmission. Not for clinical decision-making."
-    ),
-    version="1.1.0",
-)
-
-
-class EncounterInput(BaseModel):
-    age_group: str = Field(description="Age category, e.g. 70-80")
-    gender: str = Field(description="Gender category")
-    admission_type_id: int = Field(ge=1, le=8)
-    time_in_hospital: int = Field(ge=1, le=14)
-    prior_visits: int = Field(ge=0)
-    diagnosis_count: int = Field(ge=1, le=16)
-    medication_count: int = Field(ge=0)
-    medical_specialty: str = Field(description="Medical specialty category")
-
-
-@app.get("/")
-def home():
-    return {
-        "message": "Hospital Readmission Prediction API",
-        "status": "running",
-        "purpose": "Academic decision-support prototype only",
-    }
-
-
-
-@app.get("/health")
-def health():
-    registry_info = deployment_manifest.get("model_registry", {})
-
-    return {
-        "status": "healthy",
-        "model": model_config["model_name"],
-        "model_version": deployment_manifest["model_version"],
-        "model_registry": registry_info,
-        "deployment_stage": deployment_manifest["deployment_stage"],
-        "threshold": THRESHOLD,
-        "evaluation_metrics": deployment_manifest["metrics"],
-    }
-
-
-@app.get("/metrics")
-def metrics():
-    if not LOG_FILE.exists():
-        rows = []
-    else:
-        with LOG_FILE.open("r", newline="", encoding="utf-8") as file:
-            rows = list(csv.DictReader(file))
-
-    total = len(rows)
-    successful = sum(
-        row.get("status") == "success" for row in rows
-    )
-    errors = total - successful
-
-    latencies = [
-        float(row["latency_ms"])
-        for row in rows
-        if row.get("latency_ms")
-    ]
-
-    return {
-        "total_requests": total,
-        "successful_predictions": successful,
-        "failed_requests": errors,
-        "error_rate_percent": round(
-            errors / total * 100, 2
-        ) if total else 0.0,
-        "average_latency_ms": round(
-            sum(latencies) / len(latencies), 3
-        ) if latencies else 0.0,
-        "latest_prediction_timestamp_utc": (
-            rows[-1].get("timestamp_utc") if rows else None
-        ),
-    }
-
-
-
-REFERENCE_FILE = PROJECT_ROOT / "models" / "reference_features.csv"
-
 NUMERIC_FEATURES = [
     "time_in_hospital",
     "prior_visits",
@@ -203,45 +70,304 @@ CATEGORICAL_FEATURES = [
     "medical_specialty",
 ]
 
+EXPECTED_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
+
+MINIMUM_DRIFT_SAMPLES = 30
+DRIFT_REVIEW_THRESHOLD = 0.2
+
+
+# --------------------------------------------------
+# Prediction logging
+# --------------------------------------------------
+
+def log_prediction(record: dict) -> None:
+    """Append one prediction or error event to the CSV log."""
+    try:
+        new_file = (
+            not LOG_FILE.exists()
+            or LOG_FILE.stat().st_size == 0
+        )
+
+        with LOG_FILE.open(
+            "a",
+            newline="",
+            encoding="utf-8",
+        ) as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=LOG_FIELDS,
+            )
+
+            if new_file:
+                writer.writeheader()
+
+            writer.writerow(record)
+
+    except OSError:
+        logger.exception(
+            "Could not write prediction monitoring log"
+        )
+
+
+# --------------------------------------------------
+# Model loading
+# --------------------------------------------------
+
+MODEL_SOURCE = os.getenv("MODEL_SOURCE", "local").lower()
+
+if MODEL_SOURCE == "registry":
+    import mlflow
+    import mlflow.sklearn
+
+    mlflow.set_tracking_uri(
+        os.getenv(
+            "MLFLOW_TRACKING_URI",
+            "sqlite:///E:/Hospital_Readmission_Analytics/mlflow.db",
+        )
+    )
+
+    REGISTERED_MODEL_URI = os.getenv(
+        "MLFLOW_MODEL_URI",
+        "models:/HospitalReadmissionXGBoost/1",
+    )
+
+    model = mlflow.sklearn.load_model(
+        REGISTERED_MODEL_URI
+    )
+
+    logger.info(
+        "Loaded model from MLflow Registry: %s",
+        REGISTERED_MODEL_URI,
+    )
+
+elif MODEL_SOURCE == "local":
+    model = joblib.load(MODEL_PATH)
+
+    logger.info(
+        "Loaded model from local artifact: %s",
+        MODEL_PATH,
+    )
+
+else:
+    raise ValueError(
+        "MODEL_SOURCE must be either 'local' or 'registry'"
+    )
+
+
+with THRESHOLD_PATH.open("r", encoding="utf-8") as file:
+    model_config = json.load(file)
+
+with MANIFEST_PATH.open(
+    "r",
+    encoding="utf-8-sig",
+) as file:
+    deployment_manifest = json.load(file)
+
+THRESHOLD = float(model_config["threshold"])
+
+
+# --------------------------------------------------
+# FastAPI application and input schema
+# --------------------------------------------------
+
+app = FastAPI(
+    title="Hospital Readmission Prediction API",
+    description=(
+        "Academic prototype for predicting 30-day hospital "
+        "readmission. Not for clinical decision-making."
+    ),
+    version="1.1.0",
+)
+
+
+class EncounterInput(BaseModel):
+    age_group: str = Field(
+        description="Age category, e.g. 70-80"
+    )
+    gender: str = Field(
+        description="Gender category"
+    )
+    admission_type_id: int = Field(ge=1, le=8)
+    time_in_hospital: int = Field(ge=1, le=14)
+    prior_visits: int = Field(ge=0)
+    diagnosis_count: int = Field(ge=1, le=16)
+    medication_count: int = Field(ge=0)
+    medical_specialty: str = Field(
+        description="Medical specialty category"
+    )
+
+
+# --------------------------------------------------
+# Basic endpoints
+# --------------------------------------------------
+
+@app.get("/")
+def home():
+    return {
+        "message": "Hospital Readmission Prediction API",
+        "status": "running",
+        "purpose": "Academic decision-support prototype only",
+    }
+
+
+@app.get("/health")
+def health():
+    registry_info = deployment_manifest.get(
+        "model_registry",
+        {},
+    )
+
+    return {
+        "status": "healthy",
+        "model": model_config["model_name"],
+        "model_version": deployment_manifest["model_version"],
+        "model_registry": registry_info,
+        "deployment_stage": deployment_manifest["deployment_stage"],
+        "threshold": THRESHOLD,
+        "evaluation_metrics": deployment_manifest["metrics"],
+    }
+
+
+@app.get("/metrics")
+def metrics():
+    if not LOG_FILE.exists() or LOG_FILE.stat().st_size == 0:
+        rows = []
+    else:
+        with LOG_FILE.open(
+            "r",
+            newline="",
+            encoding="utf-8",
+        ) as file:
+            rows = list(csv.DictReader(file))
+
+    total = len(rows)
+
+    successful = sum(
+        row.get("status") == "success"
+        for row in rows
+    )
+
+    errors = total - successful
+
+    latencies = [
+        float(row["latency_ms"])
+        for row in rows
+        if row.get("latency_ms")
+    ]
+
+    return {
+        "total_requests": total,
+        "successful_predictions": successful,
+        "failed_requests": errors,
+        "error_rate_percent": round(
+            errors / total * 100,
+            2,
+        ) if total else 0.0,
+        "average_latency_ms": round(
+            sum(latencies) / len(latencies),
+            3,
+        ) if latencies else 0.0,
+        "latest_prediction_timestamp_utc": (
+            rows[-1].get("timestamp_utc")
+            if rows else None
+        ),
+    }
+
+
+# --------------------------------------------------
+# Numeric drift: Population Stability Index (PSI)
+# --------------------------------------------------
 
 def calculate_psi(reference, current, bins=10):
-    """Calculate PSI using reference-data quantile bins."""
+    """
+    Calculate PSI using reference-data quantile bins.
+
+    Returns None when a valid comparison cannot be calculated.
+    A constant reference feature is handled explicitly.
+    """
     reference = pd.to_numeric(
-        pd.Series(reference), errors="coerce"
+        pd.Series(reference),
+        errors="coerce",
     ).dropna().to_numpy(dtype=float)
 
     current = pd.to_numeric(
-        pd.Series(current), errors="coerce"
+        pd.Series(current),
+        errors="coerce",
     ).dropna().to_numpy(dtype=float)
 
     if len(reference) == 0 or len(current) == 0:
         return None
 
+    # Handle a constant reference distribution explicitly.
+    if np.all(reference == reference[0]):
+        if np.all(current == reference[0]):
+            return 0.0
+
+        # PSI is undefined with the existing binning method
+        # when the reference distribution is constant.
+        # The caller should flag this result for review.
+        return None
+
     edges = np.unique(
-        np.quantile(reference, np.linspace(0, 1, bins + 1))
+        np.quantile(
+            reference,
+            np.linspace(0, 1, bins + 1),
+        )
     )
 
     if len(edges) < 2:
-        return 0.0
+        return None
 
     edges[0] = -np.inf
     edges[-1] = np.inf
 
-    ref_counts = np.histogram(reference, bins=edges)[0]
-    cur_counts = np.histogram(current, bins=edges)[0]
+    ref_counts = np.histogram(
+        reference,
+        bins=edges,
+    )[0]
 
-    ref_pct = np.clip(ref_counts / len(reference), 1e-6, None)
-    cur_pct = np.clip(cur_counts / len(current), 1e-6, None)
+    cur_counts = np.histogram(
+        current,
+        bins=edges,
+    )[0]
+
+    ref_pct = np.clip(
+        ref_counts / len(reference),
+        1e-6,
+        None,
+    )
+
+    cur_pct = np.clip(
+        cur_counts / len(current),
+        1e-6,
+        None,
+    )
 
     return float(
-        np.sum((cur_pct - ref_pct) * np.log(cur_pct / ref_pct))
+        np.sum(
+            (cur_pct - ref_pct)
+            * np.log(cur_pct / ref_pct)
+        )
     )
 
 
+# --------------------------------------------------
+# Categorical drift: Total variation distance
+# --------------------------------------------------
+
 def calculate_categorical_drift(reference, current):
     """Calculate total variation distance between categories."""
-    ref = pd.Series(reference).fillna("Missing").astype(str)
-    cur = pd.Series(current).fillna("Missing").astype(str)
+    ref = (
+        pd.Series(reference)
+        .fillna("Missing")
+        .astype(str)
+    )
+
+    cur = (
+        pd.Series(current)
+        .fillna("Missing")
+        .astype(str)
+    )
 
     if ref.empty or cur.empty:
         return None
@@ -252,46 +378,118 @@ def calculate_categorical_drift(reference, current):
     cur_dist = cur.value_counts(normalize=True)
 
     distance = sum(
-        abs(ref_dist.get(category, 0) - cur_dist.get(category, 0))
+        abs(
+            ref_dist.get(category, 0)
+            - cur_dist.get(category, 0)
+        )
         for category in categories
     ) / 2
 
     return float(distance)
 
 
+# --------------------------------------------------
+# Drift monitoring
+# --------------------------------------------------
 
 @app.get("/drift")
 def drift(
     window: int = Query(default=1000, ge=30, le=10000)
 ):
+    # Validate the reference dataset.
     if not REFERENCE_FILE.exists():
         raise HTTPException(
             status_code=500,
             detail="Reference feature dataset is missing.",
         )
 
-    reference = pd.read_csv(REFERENCE_FILE)
+    try:
+        reference = pd.read_csv(REFERENCE_FILE)
+    except (OSError, pd.errors.ParserError) as exc:
+        logger.exception("Could not read reference dataset")
 
-    if not LOG_FILE.exists():
+        raise HTTPException(
+            status_code=500,
+            detail="Reference feature dataset could not be read.",
+        ) from exc
+
+    missing_reference = [
+        feature
+        for feature in EXPECTED_FEATURES
+        if feature not in reference.columns
+    ]
+
+    if missing_reference:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": (
+                    "Reference dataset is missing required features."
+                ),
+                "missing_features": missing_reference,
+            },
+        )
+
+    # Load the prediction log.
+    if (
+        not LOG_FILE.exists()
+        or LOG_FILE.stat().st_size == 0
+    ):
         current = pd.DataFrame()
     else:
-        current = pd.read_csv(LOG_FILE)
+        try:
+            current = pd.read_csv(LOG_FILE)
+        except (OSError, pd.errors.ParserError) as exc:
+            logger.exception("Could not read prediction log")
 
-    # Keep only successful predictions.
-    if not current.empty and "status" in current.columns:
-        current = current[current["status"] == "success"].copy()
+            raise HTTPException(
+                status_code=500,
+                detail="Prediction log could not be read.",
+            ) from exc
+
+    # A non-empty log must contain a status column.
+    if not current.empty and "status" not in current.columns:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Prediction log is missing the required status column."
+            ),
+        )
+
+    # Count successful predictions only.
+    if not current.empty:
+        current = current[
+            current["status"] == "success"
+        ].copy()
 
     # Keep only the most recent successful predictions.
     current = current.tail(window)
 
-    minimum_samples = 30
+    # Do not silently skip required features.
+    if not current.empty:
+        missing_current = [
+            feature
+            for feature in EXPECTED_FEATURES
+            if feature not in current.columns
+        ]
 
-    # Do not calculate or display drift scores with too little data.
-    if len(current) < minimum_samples:
+        if missing_current:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": (
+                        "Prediction log is missing required features."
+                    ),
+                    "missing_features": missing_current,
+                },
+            )
+
+    # Require a minimum number of successful predictions.
+    if len(current) < MINIMUM_DRIFT_SAMPLES:
         return {
             "status": "insufficient_data",
             "current_samples": len(current),
-            "minimum_samples": minimum_samples,
+            "minimum_samples": MINIMUM_DRIFT_SAMPLES,
             "window": window,
             "reference_samples": len(reference),
             "message": (
@@ -303,43 +501,56 @@ def drift(
 
     feature_results = {}
 
+    # Evaluate numeric features with PSI.
     for feature in NUMERIC_FEATURES:
-        if feature not in reference.columns or feature not in current.columns:
-            continue
-
         value = calculate_psi(
             reference[feature],
             current[feature],
         )
 
+        # An undefined PSI requires review, not an automatic "ok".
+        feature_status = (
+            "review"
+            if value is None or value >= DRIFT_REVIEW_THRESHOLD
+            else "ok"
+        )
+
         feature_results[feature] = {
             "metric": "PSI",
             "value": round(value, 4) if value is not None else None,
-            "status": (
-                "review"
-                if value is not None and value >= 0.2
-                else "ok"
-            ),
+            "status": feature_status,
         }
 
-    for feature in CATEGORICAL_FEATURES:
-        if feature not in reference.columns or feature not in current.columns:
-            continue
+        if value is None:
+            feature_results[feature]["message"] = (
+                "PSI could not be calculated reliably; "
+                "review the reference and current feature values."
+            )
 
+    # Evaluate categorical features with total variation distance.
+    for feature in CATEGORICAL_FEATURES:
         value = calculate_categorical_drift(
             reference[feature],
             current[feature],
         )
 
+        feature_status = (
+            "review"
+            if value is None or value >= DRIFT_REVIEW_THRESHOLD
+            else "ok"
+        )
+
         feature_results[feature] = {
             "metric": "total_variation_distance",
             "value": round(value, 4) if value is not None else None,
-            "status": (
-                "review"
-                if value is not None and value >= 0.2
-                else "ok"
-            ),
+            "status": feature_status,
         }
+
+        if value is None:
+            feature_results[feature]["message"] = (
+                "Categorical drift could not be calculated; "
+                "review the reference and current feature values."
+            )
 
     has_drift = any(
         item["status"] == "review"
@@ -349,7 +560,7 @@ def drift(
     return {
         "status": "review" if has_drift else "ok",
         "current_samples": len(current),
-        "minimum_samples": minimum_samples,
+        "minimum_samples": MINIMUM_DRIFT_SAMPLES,
         "window": window,
         "reference_samples": len(reference),
         "features": feature_results,
@@ -360,7 +571,9 @@ def drift(
     }
 
 
-
+# --------------------------------------------------
+# Prediction endpoint
+# --------------------------------------------------
 
 @app.post("/predict")
 def predict(encounter: EncounterInput):
@@ -373,8 +586,14 @@ def predict(encounter: EncounterInput):
     error_message = ""
 
     try:
-        input_data = pd.DataFrame([encounter.model_dump()])
-        probability = float(model.predict_proba(input_data)[0, 1])
+        input_data = pd.DataFrame(
+            [encounter.model_dump()]
+        )
+
+        probability = float(
+            model.predict_proba(input_data)[0, 1]
+        )
+
         prediction = int(probability >= THRESHOLD)
 
         return {
@@ -391,17 +610,18 @@ def predict(encounter: EncounterInput):
     except Exception as exc:
         status = "error"
         error_message = str(exc)
+
         logger.exception("Prediction failed")
+
         raise HTTPException(
             status_code=500,
             detail="Prediction failed. Check API logs for details.",
         ) from exc
 
-
-
     finally:
         latency_ms = round(
-            (time.perf_counter() - start_time) * 1000, 3
+            (time.perf_counter() - start_time) * 1000,
+            3,
         )
 
         input_features = encounter.model_dump()
