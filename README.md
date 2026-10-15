@@ -1,738 +1,427 @@
-Hospital Readmission Analytics and Prediction
-Phase I – Data Engineering and MLOps
+﻿# Hospital Readmission Analytics & MLOps
 
-Student: Yash Kumar Rajput
-USN: 1CR23CI063
-Institution: CMR Institute of Technology, Bengaluru
-Course: ML Ops
-Semester: 7th Semester
+An end-to-end data engineering and machine-learning project for
+analysing 30-day hospital readmissions using the **Diabetes 130-US
+Hospitals (1999--2008)** dataset. The project combines an orchestrated
+ETL pipeline, PostgreSQL analytics, a Streamlit dashboard, model
+training and tracking, a FastAPI prediction service, Docker packaging,
+and GitHub Actions CI.
 
-1. Project Overview
+> **Research and education only.** This is an academic prototype, not a
+> clinically validated tool. Its predictions must not be used to make
+> patient-care decisions.
 
-This project implements a Phase I data engineering pipeline for analysing hospital readmissions using a public anonymized hospital encounter dataset.
+[![Hospital Readmission
+CI](https://github.com/ykr1910/Hospital-Readmission-Analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/ykr1910/Hospital-Readmission-Analytics/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.13-blue)
+![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-4169E1)
+![Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-FF4B4B)
+![Docker](https://img.shields.io/badge/Deployment-Docker-2496ED)
 
-The pipeline acquires the raw dataset, creates a staging copy, performs data-quality validation and transformation, engineers analytical features, loads curated data into PostgreSQL, and presents analytical results through a Streamlit dashboard.
+## Overview
 
-Apache Airflow is used in WSL Ubuntu to orchestrate the repeatable ETL workflow.
+The project has two connected areas:
 
-Phase I scope: data acquisition, ingestion, transformation, validation, PostgreSQL analytics, orchestration, and dashboarding.
+-   **Data engineering and analytics:** ingest and stage source data,
+    validate and transform records, engineer features, load PostgreSQL
+    tables, orchestrate ETL with Apache Airflow, and explore results in
+    Streamlit.
+-   **Machine learning and serving:** compare classification models,
+    track experiments with MLflow, serve predictions through FastAPI,
+    package the service with Docker, and expose health, request metrics,
+    and input-drift checks.
 
-Machine-learning model training, MLflow, FastAPI, Docker deployment, and monitoring belong to Phase II and are intentionally not included in this Phase I implementation.
+### Key capabilities
 
-2. Dataset
+-   Layered raw, staging, and cleaned data workflow.
+-   Validation rules and rejected-record logging.
+-   PostgreSQL analytical tables and readmission data mart.
+-   Airflow orchestration of ingestion, transformation, and database
+    loading.
+-   Streamlit dashboard with readmission analysis and CSV export.
+-   Patient-group-aware train/validation/test split to reduce leakage
+    between sets.
+-   Logistic Regression, Random Forest, and XGBoost model comparison.
+-   MLflow experiment tracking and model registry integration.
+-   FastAPI prediction, health, metrics, and drift endpoints.
+-   Dockerized API and GitHub Actions checks for syntax, image build,
+    API health, and prediction smoke tests.
 
-Dataset: Diabetes 130-US Hospitals for Years 1999-2008
+## Architecture
 
-Source: UCI Machine Learning Repository
-Dataset ID: 296
-DOI: 10.24432/C5230J
-License: CC BY 4.0
+``` mermaid
+flowchart TD
+    A[UCI Diabetes 130-US Hospitals dataset] --> B[Raw data]
+    B --> C[Ingestion and staging]
+    C --> D[Transformation and validation]
+    D --> E[Cleaned data and rejected-record log]
+    E --> F[(PostgreSQL healthcare schema)]
+    F --> G[Readmission analytical mart]
+    G --> H[Streamlit dashboard]
+    I[Apache Airflow DAG] -. orchestrates .-> C
+    I -. orchestrates .-> D
+    I -. orchestrates .-> F
+    G --> J[Feature preparation]
+    J --> K[Model training and evaluation]
+    K --> L[MLflow tracking and registry]
+    L --> M[Exported model artifact]
+    M --> N[FastAPI]
+    N --> O[Docker container]
+    O --> P[Prediction API]
+    O --> Q[Health and request metrics]
+    O --> R[Input drift checks]
+    S[GitHub Actions] --> T[Syntax checks and CI Docker build]
+    T --> U[API smoke tests]
+```
 
-The dataset contains 101,766 hospital encounters from 130 US hospitals/integrated delivery networks over ten years. The data is de-identified and contains patient and encounter attributes relevant to readmission analysis.
+The CI Docker image uses a **dummy test model** to verify API startup
+and endpoint behavior without requiring local model artifacts. It is not
+the model used for real predictions. The production Docker image
+requires the actual model and reference-data artifacts generated or
+exported during the local workflow.
 
-The project uses the dataset's readmitted field to identify early readmission:
+## Dataset
 
-<30 = readmitted within 30 days
->30 = readmitted after 30 days
-NO = no readmission
-3. Architecture
-Public Anonymized Dataset
-          |
-          v
-      Raw Layer
-          |
-          v
-     ingest.py
-          |
-          v
-    Staging Layer
-          |
-          v
-   transform.py
-          |
-          +------> Validation / Rejected Records Log
-          |
-          v
-     Cleaned Layer
-          |
-          v
- load_database.py
-          |
-          v
- PostgreSQL (healthcare schema)
-          |
-          +------> Analytical Tables / Readmission Mart
-          |
-          v
- Streamlit Dashboard
+**Diabetes 130-US Hospitals for Years 1999--2008**
 
-Airflow orchestrates:
-ingest_data -> transform_and_validate -> load_postgresql
+-   Source: [UCI Machine Learning
+    Repository](https://archive.ics.uci.edu/dataset/296/diabetes+130+us+hospitals+for+years+1999+2008)
+-   Dataset ID: `296`
+-   DOI: [10.24432/C5230J](https://doi.org/10.24432/C5230J)
+-   License: CC BY 4.0
+-   Size: 101,766 hospital encounters across 130 US hospitals/integrated
+    delivery networks.
+-   Target: readmission within 30 days, derived from `readmitted` (`<30`
+    indicates readmission within 30 days).
 
-The pipeline follows a layered data-engineering architecture:
+The source data is de-identified. This project is for analytics and
+educational experimentation, not clinical decision-making.
 
-Raw Layer – preserves the original downloaded dataset.
-Staging Layer – stores the ingestion output and metadata.
-Cleaned Layer – contains validated and transformed data.
-PostgreSQL Layer – stores curated analytical tables.
-Dashboard Layer – provides interactive analytics through Streamlit.
-Airflow – orchestrates the complete ETL workflow.
-4. Project Structure
-Hospital_Readmission_Analytics/
-│
-├── data/
-│   ├── raw/
-│   │   └── diabetic_data.csv
-│   │
-│   ├── staging/
-│   │   ├── diabetic_data_staging.csv
-│   │   └── ingestion_metadata.csv
-│   │
-│   └── cleaned/
-│       └── cleaned_hospital_data.csv
-│
-├── logs/
-│   └── rejected_records.csv
-│
-├── scripts/
-│   ├── ingest.py
-│   ├── transform.py
-│   ├── load_database.py
-│   ├── inspect_data.py
-│   └── test_db.py
-│
-├── dashboard/
-│   └── app.py
-│
-├── README.md
-├── requirements.txt
-└── .env
+## Technology stack
 
-Apache Airflow is installed separately in WSL Ubuntu and the DAG is stored in the Airflow DAG directory:
+  Area                               Tools
+  ---------------------------------- -----------------------------
+  Programming and data processing    Python, Pandas
+  ETL and validation                 Python scripts, SQLAlchemy
+  Database                           PostgreSQL, Psycopg2
+  Workflow orchestration             Apache Airflow (WSL Ubuntu)
+  Dashboard and visualization        Streamlit, Plotly
+  Machine learning                   scikit-learn, XGBoost
+  Experiment tracking and registry   MLflow
+  Prediction service                 FastAPI, Uvicorn
+  Packaging                          Docker
+  CI                                 GitHub Actions
 
-~/airflow/dags/hospital_readmission_etl.py
-5. Technologies Used
-Technology	Purpose
-Python	ETL and data processing
-Pandas	Data cleaning and transformation
-PostgreSQL	Relational analytical database
-SQLAlchemy	Database connectivity
-Psycopg2	PostgreSQL database operations
-Apache Airflow	ETL orchestration
-Streamlit	Interactive dashboard
-Plotly	Data visualization
-python-dotenv	Environment variable management
-WSL Ubuntu	Airflow execution environment
-6. Environment Setup
+## Repository layout
 
-The project uses separate Python environments for the Windows-based ETL/dashboard workflow and Apache Airflow.
+``` text
+Hospital-Readmission-Analytics/
+â”œâ”€â”€ api/
+â”‚   â””â”€â”€ main.py
+â”œâ”€â”€ dashboard/
+â”‚   â””â”€â”€ app.py
+â”œâ”€â”€ scripts/
+â”‚   â”œâ”€â”€ ingest.py
+â”‚   â”œâ”€â”€ transform.py
+â”‚   â”œâ”€â”€ load_database.py
+â”‚   â””â”€â”€ train_models.py
+â”œâ”€â”€ models/
+â”‚   â”œâ”€â”€ decision_threshold.json
+â”‚   â””â”€â”€ deployment_manifest.json
+â”œâ”€â”€ .github/
+â”‚   â””â”€â”€ workflows/
+â”‚       â””â”€â”€ ci.yml
+â”œâ”€â”€ Dockerfile
+â”œâ”€â”€ Dockerfile.ci
+â”œâ”€â”€ .dockerignore
+â”œâ”€â”€ requirements.txt
+â”œâ”€â”€ requirements-api.txt
+â””â”€â”€ README.md
+```
 
-Windows Python Environment
+Datasets, logs, reports, trained model binaries, MLflow tracking data,
+and credentials are intentionally excluded from Git. Some files are
+generated locally and may not exist in a fresh clone. The Airflow DAG is
+configured in the local Airflow DAG directory in WSL.
 
-The main project uses a Python virtual environment:
+## Data engineering workflow
 
-venv/
+The ETL workflow runs in this order:
 
-Activate it using:
+``` text
+ingest_data
+    â†“
+transform_and_validate
+    â†“
+load_postgresql
+```
 
-.\venv\Scripts\activate
+### 1. Ingest
 
-Install dependencies:
+The ingestion step reads the source CSV, preserves the raw data, creates
+a staging copy, and records ingestion metadata.
 
-pip install -r requirements.txt
-Airflow Environment
+### 2. Transform and validate
 
-Apache Airflow is executed through WSL Ubuntu because Airflow is not natively supported on Windows.
+The transformation step validates required fields, duplicate encounter
+IDs, length of stay, diagnosis counts, and readmission status. It
+handles selected missing values, engineers analytical features, and
+records rejected records.
 
-The Airflow virtual environment is:
+Key engineered features:
 
-/mnt/e/Hospital_Readmission_Analytics/airflow-venv
+-   `patient_key`: surrogate patient identifier for analysis.
+-   `prior_visits`: prior inpatient, emergency, and outpatient
+    utilization count as defined by the pipeline.
+-   `diagnosis_count`: count of available diagnosis fields.
+-   `medication_count`: count based on medication activity fields.
+-   `age_group`: grouped age category.
 
-Activate it in WSL:
+### 3. Load PostgreSQL
 
-source /mnt/e/Hospital_Readmission_Analytics/airflow-venv/bin/activate
-7. Database Configuration
+The loading step populates the `healthcare` schema.
 
-Database connection details are stored in a .env file.
+  -----------------------------------------------------------------------------------
+  Table                           Purpose                     Previously observed row
+                                                                                count
+  ------------------------------- ---------------------- ----------------------------
+  `healthcare.admissions`         Encounter and                               101,766
+                                  hospital-utilization
+                                  data
 
-Example:
+  `healthcare.diagnoses`          Encounter diagnosis                         101,766
+                                  fields
 
+  `healthcare.patient_summary`    Patient-level summary                        71,518
+                                  and history
+
+  `healthcare.readmission_mart`   Dashboard-ready                             101,766
+                                  analytical dataset
+  -----------------------------------------------------------------------------------
+
+These counts describe the current project dataset and may vary if the
+source or transformation logic changes.
+
+## Dashboard
+
+Start the Streamlit dashboard from the project root:
+
+``` powershell
+.\venv\Scripts\Activate.ps1
+streamlit run dashboard/app.py
+```
+
+Open <http://localhost:8501>.
+
+The dashboard includes:
+
+-   Overall 30-day readmission rate and encounter counts.
+-   Readmission rates by age group and gender.
+-   Length of stay, prior visits, diagnosis count, and medical specialty
+    analysis.
+-   Readmission status and primary diagnosis views.
+-   Dataset summary and data-quality indicators.
+-   CSV export of analytical data.
+
+Previously observed dataset-level figures:
+
+  Metric                                Value
+  --------------------------------- ---------
+  Total encounters                    101,766
+  Unique patients                      71,518
+  Readmissions within 30 days          11,357
+  Overall 30-day readmission rate      11.16%
+
+These are descriptive statistics for this dataset, not population-level
+clinical estimates.
+
+## Machine-learning workflow
+
+The modelling workflow uses engineered features including age group,
+gender, admission type, time in hospital, prior visits, diagnosis count,
+medication count, and medical specialty.
+
+The training workflow compares Logistic Regression, Random Forest, and
+XGBoost. A patient-group-aware split reduces leakage between training,
+validation, and test sets. The decision threshold is selected using
+validation data; final metrics are evaluated on the held-out test set.
+
+### Current recorded test metrics
+
+  Metric                  Value
+  -------------------- --------
+  ROC-AUC                0.6311
+  Precision              0.1661
+  Recall                 0.4211
+  F1 score               0.2383
+  Brier score            0.0914
+  Decision threshold     0.1336
+
+The current XGBoost model offers modest discrimination and low
+precision. A positive prediction is not a diagnosis, and a negative
+prediction does not rule out readmission. Model performance,
+calibration, subgroup behavior, data quality, and external validity
+would need further evaluation before any clinical use.
+
+## Prediction API
+
+The FastAPI service is packaged as a Docker container and serves the
+exported model artifact.
+
+When the API container is running, its base URL is
+`http://localhost:8000`. Interactive documentation is available at
+<http://localhost:8000/docs>.
+
+  -----------------------------------------------------------------------
+  Endpoint                            Purpose
+  ----------------------------------- -----------------------------------
+  `GET /health`                       Service and deployed-model metadata
+
+  `POST /predict`                     Return a readmission probability
+                                      and threshold-based class
+
+  `GET /metrics`                      Aggregate request counts, failures,
+                                      error rate, and latency
+
+  `GET /drift`                        Compare recent prediction inputs
+                                      with reference features
+  -----------------------------------------------------------------------
+
+### Example prediction request
+
+``` json
+{
+  "age_group": "70-80",
+  "gender": "Female",
+  "admission_type_id": 1,
+  "time_in_hospital": 3,
+  "prior_visits": 0,
+  "diagnosis_count": 5,
+  "medication_count": 10,
+  "medical_specialty": "InternalMedicine"
+}
+```
+
+The response includes the predicted class, probability, configured
+threshold, model name, and an academic-prototype notice. Exact values
+depend on the deployed model artifact.
+
+### Monitoring notes
+
+-   `/metrics` reports aggregate request and latency information.
+-   `/drift` requires at least 30 successful prediction samples before
+    interpreting feature-level drift.
+-   Numeric distribution shifts use Population Stability Index (PSI);
+    categorical shifts use total variation distance.
+-   Drift indicates a change in input distributions, not whether
+    prediction accuracy has changed.
+
+## Run the API with Docker
+
+The production `Dockerfile` expects the actual model artifact and
+reference features to exist locally. These generated artifacts are
+excluded from Git, so a fresh clone must first reproduce or export them
+using the project workflow.
+
+Build the production image only after the required artifacts are
+available:
+
+``` powershell
+docker build -t hospital-readmission-api:local .
+docker run --name hospital-readmission-api -p 8000:8000 hospital-readmission-api:local
+```
+
+If a container already uses port `8000`, inspect it before starting
+another one. Do not use `Dockerfile.ci` for real predictions: it creates
+a dummy model solely for automated testing.
+
+## Configuration and secrets
+
+-   Keep database credentials and local settings in `.env`.
+-   Never commit `.env`, database passwords, API keys, or other secrets.
+-   Configure database connection values for your environment.
+-   The dashboard connects to the local PostgreSQL service; Airflow runs
+    separately in WSL Ubuntu.
+-   Review `.gitignore` before adding generated datasets, model
+    binaries, logs, or tracking databases to Git.
+
+Example configuration shape (use your own local values):
+
+``` dotenv
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=hospital_readmission
 DB_USER=postgres
-DB_PASSWORD=YOUR_PASSWORD
+DB_PASSWORD=replace_with_your_local_password
+```
 
-The .env file should not be committed to version control because it contains database credentials.
+Do not copy real credentials into this README or commit them to version
+control.
 
-The PostgreSQL database used by the project is:
+## Continuous integration
 
-Database: hospital_readmission
-Schema: healthcare
-8. ETL Pipeline
+GitHub Actions runs on pushes and pull requests targeting `main`. The
+workflow:
 
-The ETL process consists of three main scripts.
+1.  Checks Python syntax.
+2.  Builds the CI-only Docker image.
+3.  Starts the API container.
+4.  Tests `/health`.
+5.  Sends a sample request to `/predict` and validates the response.
+6.  Prints container logs on failure and removes the test container.
 
-8.1 Data Ingestion
+The CI workflow verifies basic startup and endpoint behavior. Since it
+uses a dummy classifier, it does not evaluate the trained XGBoost
+model's quality or replace testing with real model artifacts.
 
-Run:
+## Reproducibility
 
+The project uses separate environments for the Windows ETL/dashboard
+workflow and Airflow in WSL Ubuntu.
+
+Typical ETL commands, run from the repository root:
+
+``` powershell
+.\venv\Scripts\Activate.ps1
 python scripts/ingest.py
-
-The ingestion script:
-
-Reads the raw dataset.
-Preserves the raw dataset.
-Creates a staging copy.
-Records ingestion metadata.
-Records extraction date.
-Records source file.
-Records status.
-Records row and column counts.
-
-Example successful output:
-
-Raw dataset loaded successfully!
-Rows: 101766
-Columns: 50
-
-Staging dataset created successfully!
-Staging file: data/staging/diabetic_data_staging.csv
-
-Ingestion metadata:
-       extraction_date                 source_file   status  row_count  column_count
-0  2026-09-03 19:45:03  data/raw/diabetic_data.csv  SUCCESS     101766           50
-8.2 Transformation and Validation
-
-Run:
-
 python scripts/transform.py
-
-The transformation stage performs:
-
-Required-field validation.
-Duplicate encounter validation.
-Length-of-stay validation.
-Diagnosis-count validation.
-Readmission-field validation.
-Missing-value handling.
-Removal of highly incomplete weight field.
-Standardization of selected categorical missing values.
-Creation of patient-safe surrogate keys.
-Prior-visit feature engineering.
-Diagnosis-count feature engineering.
-Medication-count feature engineering.
-Age-group feature engineering.
-Rejected-record logging.
-
-The generated rejected-record file is:
-
-logs/rejected_records.csv
-
-Successful execution produced:
-
-Rows after transformation: 101766
-Columns after transformation: 54
-
-New columns:
-['patient_key', 'prior_visits', 'diagnosis_count', 'medication_count', 'age_group']
-
-Cleaned dataset saved successfully!
-Output file: data/cleaned/cleaned_hospital_data.csv
-8.3 PostgreSQL Loading
-
-Run:
-
 python scripts/load_database.py
-
-The loading stage:
-
-Clears previous analytical data.
-Loads the cleaned dataset.
-Populates PostgreSQL analytical tables.
-Uses bulk loading for efficient database insertion.
-Creates the readmission analytical mart.
-
-Successful execution:
-
-Existing database data cleared.
-Cleaned dataset loaded!
-Rows: 101766
-Columns: 54
-
-Loading admissions...
-Admissions loaded: 101766
-
-Loading diagnoses...
-Diagnoses loaded: 101766
-
-Loading patient summary...
-Patient summary loaded: 71518
-
-Loading readmission mart...
-Readmission mart loaded: 101766
-
-Database loading completed successfully!
-9. PostgreSQL Analytical Tables
-
-The PostgreSQL database contains four analytical tables.
-
-9.1 healthcare.admissions
-
-Stores encounter-level admission and hospital utilization information.
-
-Rows: 101,766
-
-Important fields include:
-
-admission_type_id
-admission_source_id
-discharge_disposition_id
-time_in_hospital
-num_lab_procedures
-num_procedures
-num_medications
-number_outpatient
-number_emergency
-number_inpatient
-readmitted
-9.2 healthcare.diagnoses
-
-Stores diagnosis information for each encounter.
-
-Rows: 101,766
-
-Important fields:
-
-encounter_id
-diagnosis_1
-diagnosis_2
-diagnosis_3
-diagnosis_count
-9.3 healthcare.patient_summary
-
-Stores patient-level demographic and encounter-history information.
-
-Rows: 71,518
-
-Important fields:
-
-patient_key
-race
-gender
-age_group
-medical_specialty
-payer_code
-prior_visits
-9.4 healthcare.readmission_mart
-
-The main analytical data mart used by the dashboard.
-
-Rows: 101,766
-
-Fields:
-
-encounter_id
-patient_key
-age_group
-gender
-admission_type_id
-time_in_hospital
-prior_visits
-diagnosis_count
-medication_count
-readmitted
-medical_specialty
-10. Data Quality and Validation
-
-The transformation pipeline performs validation before creating the cleaned dataset.
-
-Validation Rules
-Validation	Rule
-Encounter ID	Must not be missing
-Duplicate encounter	Duplicate encounter IDs are rejected
-Length of stay	Must be between 1 and 14 days
-Number of diagnoses	Must be between 1 and 16
-Readmission status	Must not be missing
-
-Invalid records are written to:
-
-logs/rejected_records.csv
-
-The successful pipeline execution resulted in no rejected records.
-
-The final analytical mart contains:
-
-Total rows:       101,766
-Unique encounters: 101,766
-Unique patients:   71,518
-11. Feature Engineering
-
-The following analytical features were created during transformation.
-
-patient_key
-
-A patient-safe surrogate identifier generated from the source patient identifier.
-
-The original patient identifier is not used directly in the analytical tables.
-
-prior_visits
-
-Calculated using:
-
-number_inpatient
-+ number_emergency
-+ number_outpatient
-
-This represents the patient's prior healthcare utilization.
-
-diagnosis_count
-
-Counts the available diagnosis fields:
-
-diag_1
-diag_2
-diag_3
-medication_count
-
-Counts medication fields with meaningful medication activity such as:
-
-Steady
-Up
-Down
-age_group
-
-The original age categories are converted into ordered age groups:
-
-0-10
-10-20
-20-30
-30-40
-40-50
-50-60
-60-70
-70-80
-80-90
-90-100
-
-These features are stored in the cleaned dataset and analytical database.
-
-12. Apache Airflow Orchestration
-
-Apache Airflow is used to make the ETL pipeline repeatable and orchestrated.
-
-DAG:
-
-hospital_readmission_etl
-
-Tasks:
-
-ingest_data
-      |
-      v
-transform_and_validate
-      |
-      v
-load_postgresql
-
-The DAG file is:
-
-~/airflow/dags/hospital_readmission_etl.py
-
-The DAG uses Python operators to execute the project ETL scripts.
-
-The pipeline is configured with:
-
-catchup = False
-schedule = None
-
-This allows the workflow to be manually triggered for reproducible execution during the Phase I demonstration.
-
-A successful end-to-end execution was completed with all three tasks marked successful.
-
-Observed execution duration:
-
-Approximately 1 minute 6 seconds
-13. Streamlit Dashboard
-
-The interactive dashboard is implemented using Streamlit and Plotly.
-
-Run:
-
 streamlit run dashboard/app.py
-
-The dashboard connects to PostgreSQL and retrieves analytical results using SQL queries.
-
-Dashboard Indicators and Views
-
-The dashboard provides more than five meaningful analytical views.
-
-KPI Cards
-
-The dashboard displays:
-
-30-Day Readmission Rate
-Total Encounters
-30-Day Readmissions
-Total Unique Patients
-
-The overall 30-day readmission rate is approximately:
-
-11.16%
-Patient Profile
-
-The Patient Profile section contains:
-
-30-day readmission rate by age group
-30-day readmission rate by gender
-Readmission Analysis
-
-The Readmission Analysis section contains:
-
-Readmission rate by length of stay
-Readmission rate by prior visits
-Readmission rate by diagnosis count
-Readmission rate by medical specialty
-Readmission status distribution
-Diagnosis Analysis
-
-The Diagnosis Analysis section contains:
-
-Readmission rate by primary diagnosis
-Dataset Summary
-
-The dashboard also provides:
-
-Total encounters
-Unique patients
-30-day readmissions
-Readmissions after 30 days
-Non-readmitted encounters
-Data Quality
-
-The dashboard displays:
-
-Total rows
-Unique encounters
-Unique patients
-Data Export
-
-Users can download the analytical readmission data as a CSV file.
-
-14. Key Analytical Findings
-
-The dashboard analysis produced the following observations.
-
-Overall Readmission
-
-There are:
-
-101,766 total encounters
-11,357 readmissions within 30 days
-11.16% overall 30-day readmission rate
-71,518 unique patients
-Prior Healthcare Utilization
-
-Readmission rates increase as prior healthcare utilization increases.
-
-Prior Visits	Readmission Rate
-0	8.18%
-1-2	12.59%
-3-5	16.39%
-6-9	23.89%
-10+	29.60%
-
-This indicates that patients with a greater history of previous healthcare utilization have a higher observed readmission rate.
-
-Age
-
-The highest observed readmission rate among the age groups was:
-
-20-30: 14.24%
-
-Other relatively high groups include:
-
-80-90: 12.08%
-70-80: 11.77%
-Length of Stay
-
-Readmission rates generally increase across several higher length-of-stay categories.
-
-Examples include:
-
-1 day: 8.18%
-5 days: 12.03%
-8 days: 14.23%
-10 days: 14.35%
-Medical Specialty
-
-Among specialties with at least 500 encounters, the highest observed readmission rates include:
-
-Nephrology: 15.38%
-Surgery-Vascular: 13.88%
-Psychiatry: 12.18%
-Family/GeneralPractice: 11.87%
-Primary Diagnosis
-
-Among sufficiently frequent primary diagnosis codes, several diagnosis categories show higher observed readmission rates.
-
-The highest examples include:
-
-250.7: 18.94%
-250.6: 18.51%
-434:   16.22%
-440:   15.83%
-820:   15.80%
-
-These observations are descriptive and do not imply causal relationships.
-
-15. Reproducibility
-
-The project is designed so that the main ETL stages can be executed repeatedly.
-
-Step 1 – Activate Environment
-.\venv\Scripts\activate
-Step 2 – Run Ingestion
-python scripts/ingest.py
-Step 3 – Run Transformation
-python scripts/transform.py
-Step 4 – Load PostgreSQL
-python scripts/load_database.py
-Step 5 – Start Dashboard
-streamlit run dashboard/app.py
-Step 6 – Run Airflow
-
-In WSL:
-
-source /mnt/e/Hospital_Readmission_Analytics/airflow-venv/bin/activate
-
-Then use the Airflow UI to trigger:
-
-hospital_readmission_etl
-
-The Airflow DAG executes the same three ETL stages automatically:
-
-Ingestion
-    ↓
-Transformation and Validation
-    ↓
-PostgreSQL Loading
-16. Privacy and Security
-
-The source dataset is de-identified and publicly available.
-
-The project follows basic data-protection practices:
-
-Raw data is retained separately from transformed data.
-The original patient identifier is not used directly in analytical tables.
-A surrogate patient_key is created.
-Database credentials are stored in .env.
-.env should not be committed to version control.
-Validation rejects invalid records before analytical loading.
-The dashboard exposes aggregated analytical information rather than direct patient identifiers.
-17. Phase I Deliverables
-
-The following Phase I requirements have been implemented:
-
- Public anonymized dataset acquired
- Raw data layer created
- Staging data layer created
- Cleaned data layer created
- Automated ingestion script
- Transformation and validation script
- Rejected-record/error log
- PostgreSQL database
- Analytical tables
- Readmission data mart
- Apache Airflow orchestration
- Successful end-to-end Airflow execution
- Streamlit dashboard
- More than five meaningful dashboard views/indicators
- Architecture documentation
- Data dictionary
- Validation rules
- Execution evidence
- README documentation
-
-Phase II components such as machine-learning models, MLflow, FastAPI, Docker deployment, and monitoring are intentionally excluded from this Phase I implementation.
-
-18. Demo Sequence
-
-For demonstrating the project, the following sequence can be used:
-
-1. Show the Source Dataset
-
-Explain that the project uses the UCI Diabetes 130-US Hospitals dataset.
-
-2. Show the Project Structure
-
-Explain the raw, staging, cleaned, scripts, logs, and dashboard directories.
-
-3. Show Data Ingestion
-
-Run:
-
-python scripts/ingest.py
-
-Explain the creation of the raw/staging layers and ingestion metadata.
-
-4. Show Transformation
-
-Run:
-
-python scripts/transform.py
-
-Explain validation, rejected-record logging, cleaning, and feature engineering.
-
-5. Show PostgreSQL
-
-Run:
-
-python scripts/load_database.py
-
-Show the successful loading of the four analytical tables.
-
-6. Show Airflow
-
-Open the Airflow UI and show:
-
-hospital_readmission_etl
-
-Explain:
-
-ingest_data
-      ↓
-transform_and_validate
-      ↓
-load_postgresql
-
-Show the successful execution where all three tasks are green.
-
-7. Show the Dashboard
-
-Run:
-
-streamlit run dashboard/app.py
-
-Demonstrate:
-
-KPI cards
-Age analysis
-Gender analysis
-Length-of-stay analysis
-Prior-visits analysis
-Diagnosis-count analysis
-Medical-specialty analysis
-Readmission status
-Primary diagnosis analysis
-Dataset summary
-Data quality
-CSV export
-19. References
-UCI Machine Learning Repository – Diabetes 130-US Hospitals for Years 1999-2008.
-Dataset ID: 296.
-DOI: 10.24432/C5230J.
-Apache Airflow Documentation.
-PostgreSQL Documentation.
-Streamlit Documentation.
-Plotly Documentation.
+```
+
+To train or compare models, run the training script after installing its
+dependencies and ensuring the processed data is available:
+
+``` powershell
+python scripts/train_models.py
+```
+
+Airflow runs in WSL Ubuntu. Activate the configured Airflow virtual
+environment and trigger the `hospital_readmission_etl` DAG through the
+Airflow UI. Local paths and environment settings may need to be adapted
+on another machine.
+
+## Privacy, limitations, and responsible use
+
+-   The source dataset is de-identified and publicly available.
+-   Keep credentials and generated local artifacts out of source
+    control.
+-   A surrogate patient key is used instead of exposing the source
+    patient identifier directly in analytical tables.
+-   Aggregate dashboard results should not be interpreted as causal
+    relationships.
+-   This project is an academic prototype, has not been clinically
+    validated, and must not be used for real patient-care decisions.
+
+## References
+
+-   [UCI Machine Learning Repository --- Diabetes 130-US Hospitals for
+    Years
+    1999--2008](https://archive.ics.uci.edu/dataset/296/diabetes+130+us+hospitals+for+years+1999+2008)
+-   [Dataset DOI: 10.24432/C5230J](https://doi.org/10.24432/C5230J)
+-   [Apache Airflow documentation](https://airflow.apache.org/docs/)
+-   [PostgreSQL documentation](https://www.postgresql.org/docs/)
+-   [Streamlit documentation](https://docs.streamlit.io/)
+-   [MLflow documentation](https://mlflow.org/docs/latest/)
+-   [FastAPI documentation](https://fastapi.tiangolo.com/)
+-   [Docker documentation](https://docs.docker.com/)
