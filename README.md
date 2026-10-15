@@ -116,27 +116,27 @@ educational experimentation, not clinical decision-making.
 
 ``` text
 Hospital-Readmission-Analytics/
-â”œâ”€â”€ api/
-â”‚   â””â”€â”€ main.py
-â”œâ”€â”€ dashboard/
-â”‚   â””â”€â”€ app.py
-â”œâ”€â”€ scripts/
-â”‚   â”œâ”€â”€ ingest.py
-â”‚   â”œâ”€â”€ transform.py
-â”‚   â”œâ”€â”€ load_database.py
-â”‚   â””â”€â”€ train_models.py
-â”œâ”€â”€ models/
-â”‚   â”œâ”€â”€ decision_threshold.json
-â”‚   â””â”€â”€ deployment_manifest.json
-â”œâ”€â”€ .github/
-â”‚   â””â”€â”€ workflows/
-â”‚       â””â”€â”€ ci.yml
-â”œâ”€â”€ Dockerfile
-â”œâ”€â”€ Dockerfile.ci
-â”œâ”€â”€ .dockerignore
-â”œâ”€â”€ requirements.txt
-â”œâ”€â”€ requirements-api.txt
-â””â”€â”€ README.md
+|-- api/
+|   `-- main.py
+|-- dashboard/
+|   `-- app.py
+|-- scripts/
+|   |-- ingest.py
+|   |-- transform.py
+|   |-- load_database.py
+|   `-- train_models.py
+|-- models/
+|   |-- decision_threshold.json
+|   `-- deployment_manifest.json
+|-- .github/
+|   `-- workflows/
+|       `-- ci.yml
+|-- Dockerfile
+|-- Dockerfile.ci
+|-- .dockerignore
+|-- requirements.txt
+|-- requirements-api.txt
+`-- README.md
 ```
 
 Datasets, logs, reports, trained model binaries, MLflow tracking data,
@@ -150,9 +150,11 @@ The ETL workflow runs in this order:
 
 ``` text
 ingest_data
-    â†“
+    |
+    v
 transform_and_validate
-    â†“
+    |
+    v
 load_postgresql
 ```
 
