@@ -6,11 +6,12 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 
@@ -26,6 +27,7 @@ MANIFEST_PATH = PROJECT_ROOT / "models" / "deployment_manifest.json"
 
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOG_DIR / "prediction_logs.csv"
+MONITORING_LOG_FILE = LOG_DIR / "monitoring_predictions.csv"
 REFERENCE_FILE = PROJECT_ROOT / "models" / "reference_features.csv"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -80,15 +82,17 @@ DRIFT_REVIEW_THRESHOLD = 0.2
 # Prediction logging
 # --------------------------------------------------
 
-def log_prediction(record: dict) -> None:
-    """Append one prediction or error event to the CSV log."""
+def log_prediction(record: dict, path: Path | None = None) -> None:
+    """Append one event to the specified CSV log."""
+    target = path if path is not None else LOG_FILE
+
     try:
         new_file = (
-            not LOG_FILE.exists()
-            or LOG_FILE.stat().st_size == 0
+            not target.exists()
+            or target.stat().st_size == 0
         )
 
-        with LOG_FILE.open(
+        with target.open(
             "a",
             newline="",
             encoding="utf-8",
@@ -105,7 +109,8 @@ def log_prediction(record: dict) -> None:
 
     except OSError:
         logger.exception(
-            "Could not write prediction monitoring log"
+            "Could not write prediction log: %s",
+            target,
         )
 
 
@@ -303,9 +308,8 @@ def calculate_psi(reference, current, bins=10):
         if np.all(current == reference[0]):
             return 0.0
 
-        # PSI is undefined with the existing binning method
-        # when the reference distribution is constant.
-        # The caller should flag this result for review.
+        # The current distribution differs, but PSI cannot
+        # be calculated reliably using these constant bins.
         return None
 
     edges = np.unique(
@@ -430,42 +434,42 @@ def drift(
             },
         )
 
-    # Load the prediction log.
+    # Read the dedicated monitoring log, not the operational log.
     if (
-        not LOG_FILE.exists()
-        or LOG_FILE.stat().st_size == 0
+        not MONITORING_LOG_FILE.exists()
+        or MONITORING_LOG_FILE.stat().st_size == 0
     ):
         current = pd.DataFrame()
     else:
         try:
-            current = pd.read_csv(LOG_FILE)
+            current = pd.read_csv(MONITORING_LOG_FILE)
         except (OSError, pd.errors.ParserError) as exc:
-            logger.exception("Could not read prediction log")
+            logger.exception(
+                "Could not read monitoring prediction log"
+            )
 
             raise HTTPException(
                 status_code=500,
-                detail="Prediction log could not be read.",
+                detail="Monitoring prediction log could not be read.",
             ) from exc
 
-    # A non-empty log must contain a status column.
     if not current.empty and "status" not in current.columns:
         raise HTTPException(
             status_code=500,
             detail=(
-                "Prediction log is missing the required status column."
+                "Monitoring prediction log is missing "
+                "the required status column."
             ),
         )
 
-    # Count successful predictions only.
+    # Only successful production predictions are eligible for drift.
     if not current.empty:
         current = current[
             current["status"] == "success"
         ].copy()
 
-    # Keep only the most recent successful predictions.
     current = current.tail(window)
 
-    # Do not silently skip required features.
     if not current.empty:
         missing_current = [
             feature
@@ -478,13 +482,13 @@ def drift(
                 status_code=500,
                 detail={
                     "message": (
-                        "Prediction log is missing required features."
+                        "Monitoring prediction log is missing "
+                        "required features."
                     ),
                     "missing_features": missing_current,
                 },
             )
 
-    # Require a minimum number of successful predictions.
     if len(current) < MINIMUM_DRIFT_SAMPLES:
         return {
             "status": "insufficient_data",
@@ -493,7 +497,7 @@ def drift(
             "window": window,
             "reference_samples": len(reference),
             "message": (
-                "Collect at least 30 successful predictions "
+                "Collect at least 30 successful production predictions "
                 "before interpreting drift results."
             ),
             "features": {},
@@ -501,14 +505,12 @@ def drift(
 
     feature_results = {}
 
-    # Evaluate numeric features with PSI.
     for feature in NUMERIC_FEATURES:
         value = calculate_psi(
             reference[feature],
             current[feature],
         )
 
-        # An undefined PSI requires review, not an automatic "ok".
         feature_status = (
             "review"
             if value is None or value >= DRIFT_REVIEW_THRESHOLD
@@ -527,7 +529,6 @@ def drift(
                 "review the reference and current feature values."
             )
 
-    # Evaluate categorical features with total variation distance.
     for feature in CATEGORICAL_FEATURES:
         value = calculate_categorical_drift(
             reference[feature],
@@ -576,7 +577,14 @@ def drift(
 # --------------------------------------------------
 
 @app.post("/predict")
-def predict(encounter: EncounterInput):
+def predict(
+    encounter: EncounterInput,
+    traffic_type: Literal["production", "test"] = Header(
+        default="production",
+        alias="X-Traffic-Type",
+        description="Use 'test' for synthetic or validation traffic.",
+    ),
+):
     start_time = time.perf_counter()
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -624,11 +632,9 @@ def predict(encounter: EncounterInput):
             3,
         )
 
-        input_features = encounter.model_dump()
-
         log_record = {
             "timestamp_utc": timestamp,
-            **input_features,
+            **encounter.model_dump(),
             "probability": probability,
             "threshold": THRESHOLD,
             "predicted_class": prediction,
@@ -637,10 +643,20 @@ def predict(encounter: EncounterInput):
             "error": error_message,
         }
 
+        # All requests stay in the operational log for /metrics.
         log_prediction(log_record)
 
+        # Only successful requests labelled production enter the
+        # separate monitoring log used by /drift.
+        if status == "success" and traffic_type == "production":
+            log_prediction(
+                log_record,
+                path=MONITORING_LOG_FILE,
+            )
+
         logger.info(
-            "prediction_status=%s latency_ms=%.3f",
+            "prediction_status=%s traffic_type=%s latency_ms=%.3f",
             status,
+            traffic_type,
             latency_ms,
         )

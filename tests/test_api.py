@@ -14,11 +14,13 @@ client = TestClient(api.app)
 
 @pytest.fixture
 def isolated_files(tmp_path, monkeypatch):
-    """Keep test logs and reference data separate from project data."""
+    """Keep operational logs, monitoring logs, and reference data isolated."""
     log_file = tmp_path / "prediction_logs.csv"
+    monitoring_file = tmp_path / "monitoring_predictions.csv"
     reference_file = tmp_path / "reference_features.csv"
 
     monkeypatch.setattr(api, "LOG_FILE", log_file)
+    monkeypatch.setattr(api, "MONITORING_LOG_FILE", monitoring_file)
     monkeypatch.setattr(api, "REFERENCE_FILE", reference_file)
 
     reference = pd.DataFrame({
@@ -38,11 +40,11 @@ def isolated_files(tmp_path, monkeypatch):
     })
     reference.to_csv(reference_file, index=False)
 
-    yield log_file, reference_file
+    yield log_file, reference_file, monitoring_file
 
 
 def make_prediction_rows(count=30):
-    """Build successful prediction-log rows for drift tests."""
+    """Build successful production-monitoring rows for drift tests."""
     rows = []
 
     for i in range(count):
@@ -69,7 +71,7 @@ def make_prediction_rows(count=30):
 
 
 def write_log(path, rows):
-    """Write test rows to a CSV file."""
+    """Write rows to a CSV file."""
     if not rows:
         pd.DataFrame(columns=api.LOG_FIELDS).to_csv(
             path,
@@ -93,11 +95,11 @@ def test_health_returns_model_metadata():
     assert "evaluation_metrics" in body
 
 
-def test_predict_returns_prediction_and_logs_success(
+def test_predict_returns_prediction_and_logs_test_traffic(
     isolated_files,
     monkeypatch,
 ):
-    log_file, _ = isolated_files
+    log_file, _, monitoring_file = isolated_files
 
     class FakeModel:
         def predict_proba(self, frame):
@@ -117,7 +119,11 @@ def test_predict_returns_prediction_and_logs_success(
         "medical_specialty": "InternalMedicine",
     }
 
-    response = client.post("/predict", json=payload)
+    response = client.post(
+        "/predict",
+        json=payload,
+        headers={"X-Traffic-Type": "test"},
+    )
 
     assert response.status_code == 200
 
@@ -127,6 +133,47 @@ def test_predict_returns_prediction_and_logs_success(
     assert "notice" in body
 
     with log_file.open(
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        rows = list(csv.DictReader(file))
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "success"
+    assert rows[0]["age_group"] == "50-60"
+    assert not monitoring_file.exists()
+
+
+def test_predict_logs_production_traffic_for_drift(
+    isolated_files,
+    monkeypatch,
+):
+    log_file, _, monitoring_file = isolated_files
+
+    class FakeModel:
+        def predict_proba(self, frame):
+            return np.array([[0.70, 0.30]])
+
+    monkeypatch.setattr(api, "model", FakeModel())
+
+    payload = {
+        "age_group": "50-60",
+        "gender": "Male",
+        "admission_type_id": 1,
+        "time_in_hospital": 5,
+        "prior_visits": 2,
+        "diagnosis_count": 4,
+        "medication_count": 10,
+        "medical_specialty": "InternalMedicine",
+    }
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 200
+    assert log_file.exists()
+    assert monitoring_file.exists()
+
+    with monitoring_file.open(
         newline="",
         encoding="utf-8",
     ) as file:
@@ -155,7 +202,7 @@ def test_predict_rejects_invalid_input(isolated_files):
 
 
 def test_metrics_counts_successes_and_failures(isolated_files):
-    log_file, _ = isolated_files
+    log_file, _, _ = isolated_files
 
     rows = [
         {
@@ -185,8 +232,8 @@ def test_metrics_counts_successes_and_failures(isolated_files):
 
 
 def test_drift_requires_minimum_samples(isolated_files):
-    log_file, _ = isolated_files
-    write_log(log_file, make_prediction_rows(29))
+    _, _, monitoring_file = isolated_files
+    write_log(monitoring_file, make_prediction_rows(29))
 
     response = client.get("/drift")
 
@@ -199,11 +246,26 @@ def test_drift_requires_minimum_samples(isolated_files):
     assert body["features"] == {}
 
 
-def test_drift_calculates_all_features_at_minimum(
-    isolated_files,
-):
-    log_file, _ = isolated_files
+def test_drift_ignores_operational_test_traffic(isolated_files):
+    log_file, _, monitoring_file = isolated_files
+
+    # The operational log can contain 30 successful requests,
+    # but only 12 are eligible for drift monitoring.
     write_log(log_file, make_prediction_rows(30))
+    write_log(monitoring_file, make_prediction_rows(12))
+
+    response = client.get("/drift")
+
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["status"] == "insufficient_data"
+    assert body["current_samples"] == 12
+
+
+def test_drift_calculates_all_features_at_minimum(isolated_files):
+    _, _, monitoring_file = isolated_files
+    write_log(monitoring_file, make_prediction_rows(30))
 
     response = client.get("/drift")
 
@@ -227,10 +289,8 @@ def test_drift_calculates_all_features_at_minimum(
         assert result["status"] in {"ok", "review"}
 
 
-def test_drift_rejects_missing_reference_feature(
-    isolated_files,
-):
-    _, reference_file = isolated_files
+def test_drift_rejects_missing_reference_feature(isolated_files):
+    _, reference_file, _ = isolated_files
 
     reference = pd.read_csv(reference_file)
     reference = reference.drop(columns=["admission_type_id"])
@@ -244,10 +304,8 @@ def test_drift_rejects_missing_reference_feature(
     assert "admission_type_id" in detail["missing_features"]
 
 
-def test_drift_rejects_missing_current_feature(
-    isolated_files,
-):
-    log_file, _ = isolated_files
+def test_drift_rejects_missing_current_feature(isolated_files):
+    _, _, monitoring_file = isolated_files
 
     rows = make_prediction_rows(30)
     rows = [
@@ -258,7 +316,7 @@ def test_drift_rejects_missing_current_feature(
         }
         for row in rows
     ]
-    write_log(log_file, rows)
+    write_log(monitoring_file, rows)
 
     response = client.get("/drift")
 
@@ -270,5 +328,4 @@ def test_drift_rejects_missing_current_feature(
 
 def test_drift_rejects_invalid_window():
     response = client.get("/drift?window=10")
-
     assert response.status_code == 422

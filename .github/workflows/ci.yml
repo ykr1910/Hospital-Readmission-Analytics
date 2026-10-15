@@ -1,3 +1,4 @@
+
 name: Hospital Readmission CI
 
 on:
@@ -49,7 +50,7 @@ jobs:
 
       - name: Test API prediction endpoint
         run: |
-          python -c "import requests; payload={'age_group':'70-80','gender':'Female','admission_type_id':1,'time_in_hospital':3,'prior_visits':0,'diagnosis_count':5,'medication_count':10,'medical_specialty':'InternalMedicine'}; response=requests.post('http://127.0.0.1:8000/predict', json=payload, timeout=10); response.raise_for_status(); result=response.json(); assert 0 <= result['probability'] <= 1; assert result['predicted_readmission_within_30_days'] in [0,1]; print(result)"
+          python -c "import requests; payload={'age_group':'70-80','gender':'Female','admission_type_id':1,'time_in_hospital':3,'prior_visits':0,'diagnosis_count':5,'medication_count':10,'medical_specialty':'InternalMedicine'}; response=requests.post('http://127.0.0.1:8000/predict', json=payload, headers={'X-Traffic-Type':'test'}, timeout=10); response.raise_for_status(); result=response.json(); assert 0 <= result['probability'] <= 1; assert result['predicted_readmission_within_30_days'] in [0,1]; print(result)"
 
       - name: Show API logs on failure
         if: failure()
