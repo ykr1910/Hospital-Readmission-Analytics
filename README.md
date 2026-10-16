@@ -318,6 +318,30 @@ depend on the deployed model artifact.
 -   Drift indicates a change in input distributions, not whether
     prediction accuracy has changed.
 
+
+### Explainability and subgroup evaluation
+
+The project includes model explainability and descriptive subgroup evaluation to support model review.
+
+- reports/feature_importance.png and reports/feature_importance.csv contain XGBoost built-in feature-importance results.
+- reports/shap_summary.png, reports/shap_importance.png, and reports/shap_importance.csv contain SHAP-based explainability results.
+- reports/subgroup_performance.csv contains encounter-level performance metrics grouped by age group and gender.
+- reports/calibration_curve.png shows the model's calibration analysis.
+- reports/model_comparison.csv records the model-comparison results.
+
+These reports describe model behaviour on the available dataset. Feature importance and SHAP values do not establish causation. Subgroup results may be unstable for groups with small sample sizes, and differences should not be interpreted as definitive evidence of bias or fairness.
+
+## Model monitoring and retraining policy
+
+The monitoring and retraining procedures are documented in [docs/model_monitoring_and_retraining.md](docs/model_monitoring_and_retraining.md).
+
+The policy covers service health, request failures and latency, input quality, feature drift, model performance when outcome labels become available, subgroup review, retraining triggers, candidate-model approval, and rollback.
+
+Drift monitoring is implemented, but sufficient production-labelled prediction samples have not yet accumulated to calculate drift. The configured minimum is 30 successful samples. Retraining and model promotion require review and validation; they are not triggered automatically by a drift alert alone.
+
+The project is an academic prototype using historical, de-identified data. Its monitoring thresholds are provisional, and its predictions are not validated for clinical decision-making.
+
+
 ## Run the API with Docker
 
 The production `Dockerfile` expects the actual model artifact and

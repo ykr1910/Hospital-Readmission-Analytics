@@ -44,3 +44,5 @@ Thumbs.db
 
 # Reference data used for drift monitoring
 models/reference_features.csv
+logs-test-111/
+production-container-before-1.11.json
